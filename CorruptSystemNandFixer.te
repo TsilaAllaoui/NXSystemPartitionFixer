@@ -1,0 +1,339 @@
+#REQUIRE VER 4.0.0
+#REQUIRE MINERVA
+#REQUIRE KEYS
+#REQUIRE SD
+
+# ============================================================
+#  RestoreSystem.te
+#
+#  Fixes corrupted SYSTEM partition that can't be wiped at
+#  filesystem level.
+#
+#  OPTION 1 - "Dump Raw SYSTEM"
+#    Dumps raw encrypted SYSTEM partition to SD via emmcread.
+#    User then takes this to PC and formats it with
+#    HacDiskMount using their BIS keys.
+#
+#  OPTION 2 - "Write Formatted SYSTEM"
+#    Writes the PC-formatted raw image back via emmcwrite.
+#    This completely replaces the partition including FAT
+#    table, bypassing any filesystem corruption.
+#
+# =============================================================
+#    ***********************************
+#    Saves will automatically be signed.
+#    ***********************************
+#
+# =============================================================
+#
+#  SD CARD LAYOUT:
+#    sd:/RestoreSystem/
+#      ├── SYSTEM.bin    (option 1 dumps here and option 2 will reads from here)
+# ============================================================
+
+p = println
+
+fatal = {
+    color(0xFF0000)
+    p("\n[FATAL]", fatalMsg)
+    color(0xFFFFFF)
+    p("Press any key to exit...")
+    pause()
+    exit()
+}
+
+wait = {
+    t = timer()
+    while (timer() < (t + tw)) {
+        print("Wait for", ((t + tw) - timer()) / 1000, "seconds \r")
+    }
+}
+
+srcBase = "sd:/RestoreSystem/SYSTEM"
+rawPath = "sd:/RestoreSystem/SYSTEM.bin"
+
+mkdir("sd:/RestoreSystem")
+
+# ---- Choose target ----
+clear()
+color(0x00AAFF)
+p("=== SYSTEM Partition Restore ===")
+color(0xFFFFFF)
+p("")
+
+useSys = 1
+if (emu()) {
+    p("EmuMMC detected. Choose target:\n")
+    res = menu(["Exit", "SysMMC (internal NAND)", "EmuMMC"], 0)
+    if (res == 0) {
+        exit()
+    }
+    if (res == 2) {
+        useSys = 0
+    }
+}.else() {
+    p("No emuMMC. Target: SysMMC\n")
+    p("Press any key to continue...")
+    pause()
+}
+
+if (useSys) {
+    mount = mountsys
+    mmcread = emmcread
+    mmcwrite = emmcwrite
+    targetName = "SysMMC"
+}.else() {
+    mount = mountemu
+    mmcread = emummcread
+    mmcwrite = emummcwrite
+    targetName = "EmuMMC"
+}
+
+signSaves = {
+    clear()
+    color(0x00AAFF)
+    p("=== Signing saves ===")
+    color(0xFFFFFF)
+    p("")
+
+    # Mount SYSTEM
+    print("Mounting SYSTEM... ")
+    if (mount("SYSTEM")) {
+        fatal(fatalMsg = "Failed to mount SYSTEM!\nDid you format the partition correctly?")
+    }
+    color(0xFFFFFF)
+    p("")
+
+    startMs3 = timer()
+
+    # ---- Sign save 8000000000000120 ----
+    color(0xFFAA00)
+    p("[1/2] Signing save 8000000000000120...")
+    color(0xFFFFFF)
+
+    savePath120 = "bis:/save/8000000000000120"
+    if (fsexists(savePath120)) {
+        print("  Signing... ")
+        sav120 = readsave(savePath120)
+        if (sav120.commit()) {
+            fatal(fatalMsg = "Failed to sign save 8000000000000120!")
+        }
+        sav120 = 0
+        color(0x40FF00)
+        p("SIGNED OK")
+        color(0xFFFFFF)
+    }.else() {
+        fatal(fatalMsg = "save 8000000000000120 not found!")
+    }
+    p("")
+
+    # ---- Sign save 8000000000000000 ----
+    color(0xFFAA00)
+    p("[2/2] Signing save 8000000000000000...")
+    color(0xFFFFFF)
+
+    savePath000 = "bis:/save/8000000000000000"
+    if (fsexists(savePath000)) {
+        print("  Signing... ")
+        sav000 = readsave(savePath000)
+        if (sav000.commit()) {
+            fatal(fatalMsg = "Failed to sign save 8000000000000000!")
+        }
+        sav000 = 0
+        color(0x40FF00)
+        p("SIGNED OK")
+        color(0xFFFFFF)
+    }.else() {
+        fatal(fatalMsg = "save 8000000000000000 not found!")
+    }
+    p("")
+
+    # ---- Done ----
+    elapsed3 = (timer() - startMs3) / 1000
+}
+
+# ---- Main menu ----
+clear()
+color(0x00AAFF)
+p("=== SYSTEM Partition Restore ===")
+color(0xFFFFFF)
+p("Target:", targetName)
+p("")
+p("Choose a phase:")
+p("")
+
+color(0xFFAA00)
+p("Dump raw SYSTEM to SD for PC formatting")
+color(0xFFFFFF)
+p("  Saves encrypted partition to sd:/RestoreSystem/SYSTEM.bin")
+p("")
+
+color(0xFFAA00)
+p("Write formatted SYSTEM back from SD")
+color(0xFFFFFF)
+p("  Flashes sd:/RestoreSystem/SYSTEM.bin back to eMMC")
+p("")
+
+phase = menu([
+    "Exit",
+    "Option 1: Dump raw SYSTEM",
+    "Option 2: Write formatted SYSTEM",
+    "Option 3: Sign saves
+], 0)
+
+if (phase == 0) {
+    exit()
+}
+
+# ============================================================
+#  Dump raw SYSTEM partition
+# ============================================================
+if (phase == 1) {
+    clear()
+    color(0x00AAFF)
+    p("=== Dump Raw SYSTEM ===")
+    color(0xFFFFFF)
+    p("Target:", targetName)
+    p("")
+    p("This will dump the raw encrypted SYSTEM partition")
+    p("to sd:/RestoreSystem/SYSTEM.bin")
+    p("")
+    p("The file will be ~2.5 GB. Make sure you have space.")
+    p("")
+
+    if (fsexists(rawPath)) {
+        color(0xFFAA00)
+        p("WARNING: SYSTEM.bin already exists!")
+        p("It will be overwritten.")
+        color(0xFFFFFF)
+        p("")
+    }
+
+    p("Press POWER to start, any other key to exit")
+    btn = pause()
+    if (!btn.power) {
+        exit()
+    }
+
+    clear()
+    startMs = timer()
+    color(0xFF0000)
+    p("Dumping raw SYSTEM partition...")
+    p("This will take several minutes. Do NOT power off!")
+    color(0xFFFFFF)
+    p("")
+
+    if (mmcread(rawPath, "SYSTEM")) {
+        fatal(fatalMsg = "Failed to dump SYSTEM partition! Check if there is at least ~2.5 GB of free memory or check if card is read only")
+    }
+
+    elapsed = (timer() - startMs) / 1000
+
+    color(0x40FF00)
+    p("\n=========================================")
+    p("  DUMP COMPLETE!")
+    p("=========================================")
+    color(0xFFFFFF)
+    p("")
+    p("Time:", elapsed, "seconds")
+    p("File: sd:/RestoreSystem/SYSTEM.bin")
+    p("")
+    color(0xFFAA00)
+    p("Copy SYSTEM.bin to your PC and fix it then write it back using write option")
+    color(0xFFFFFF)
+    p("")
+    p("Press any key to exit")
+    pause()
+    exit()
+}
+
+# ============================================================
+#  Write formatted SYSTEM back
+# ============================================================
+if (phase == 2) {
+    clear()
+    color(0x00AAFF)
+    p("=== Phase 2: Write Formatted SYSTEM ===")
+    color(0xFFFFFF)
+    p("Target:", targetName)
+    p("")
+
+    if (!fsexists(rawPath)) {
+        fatal(fatalMsg = "SYSTEM.bin not found!\nExpected at: sd:/RestoreSystem/SYSTEM.bin\nRun Phase 1 first, format on PC, then copy back.")
+    }
+
+    color(0x40FF00)
+    p("Found: sd:/RestoreSystem/SYSTEM.bin")
+    color(0xFFFFFF)
+    p("")
+
+    color(0xFF0000)
+    p("WARNING!")
+    p("This will overwrite the ENTIRE raw SYSTEM partition")
+    p("on", targetName, "with SYSTEM.bin!")
+    p("")
+    p("Make sure you have formatted this image on PC first!")
+    p("Writing an unformatted/wrong image will brick the")
+    p("SYSTEM partition!")
+    color(0xFFFFFF)
+    p("")
+
+    wait(tw = 10000)
+
+    p("\nPress POWER to write, any other key to exit")
+    btn = pause()
+    if (!btn.power) {
+        exit()
+    }
+
+    clear()
+    startMs = timer()
+    color(0xFF0000)
+    p("Writing raw SYSTEM partition...")
+    p("This will take several minutes. Do NOT power off!")
+    color(0xFFFFFF)
+    p("")
+
+    if (mmcwrite(rawPath, "SYSTEM")) {
+        fatal(fatalMsg = "Failed to write SYSTEM partition!\nYour SYSTEM may be in a bad state.\nRestore from NAND backup!")
+    }
+
+    elapsed = (timer() - startMs) / 1000
+
+    color(0x40FF00)
+    p("RAW WRITE COMPLETE! (", elapsed, "seconds )")
+    color(0xFFFFFF)
+    p("")
+
+    p("SYSTEM partition has been replaced.")
+    p("")
+    color(0xFFFFFF)
+
+    # Sign saves
+    signSaves()
+}
+
+# ============================================================
+#  Signing saves
+# ============================================================
+if (phase == 3) {
+    signSaves()
+}
+
+color(0x40FF00)
+p("=========================================")
+p("  RESTORE COMPLETE!")
+p("=========================================")
+color(0xFFFFFF)
+p("")
+p("Target:", targetName)
+p("Time:", elapsed3, "seconds")
+p("")
+p("Saves signed:")
+color(0x40FF00)
+p("  8000000000000120  OK")
+p("  8000000000000000  OK")
+color(0xFFFFFF)
+p("")
+p("Press any key to exit")
+pause()
